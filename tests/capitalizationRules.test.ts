@@ -4,6 +4,7 @@ import capitalizationRules, {
   isBuildingCapitalization,
   isCapitalization,
   notBuyingCapitalization,
+  payOut,
 } from '../lib/capitalizationRules';
 import { isBuying, linearBuyCost } from '@civ-clone/base-treasury/lib/buy';
 import AvailableCityBuildItemsRegistry from '@civ-clone/core-city-build/AvailableCityBuildItemsRegistry';
@@ -29,6 +30,7 @@ import setUpCity from '@civ-clone/core-city/tests/lib/setUpCity';
 class Gold extends Yield {}
 class Temple extends CityImprovement {}
 class Coinage extends Capitalization {}
+class Barracks extends CityImprovement {}
 
 const HOLD = 'test:city/hold/capitalization';
 
@@ -51,18 +53,26 @@ const setUp = async (
       cityBuildRegistry,
       ruleRegistry
     ),
-    completed: unknown[] = [];
+    completed: unknown[] = [],
+    available = { Barracks: true };
 
   cityBuildRegistry.register(cityBuild);
   playerTreasuryRegistry.register(treasury);
   availableCityBuildItemsRegistry.register(
     Temple,
+    Barracks,
     options.Item ?? Capitalization
   );
 
   ruleRegistry.register(
-    new Build(new Effect((): IBuildCriterion => new Criterion(() => true))),
+    new Build(
+      new Effect(
+        (city: City, item: unknown): IBuildCriterion =>
+          new Criterion(() => item !== Barracks || available.Barracks)
+      )
+    ),
     ...buildCost(Temple, 40),
+    ...buildCost(Barracks, 30),
     new BuildingComplete(
       new Effect((cityBuild: CityBuild, built: unknown): void => {
         completed.push(built);
@@ -74,7 +84,7 @@ const setUp = async (
     )
   );
 
-  return { cityBuild, completed, ruleRegistry, treasury };
+  return { available, cityBuild, completed, ruleRegistry, treasury };
 };
 
 // OpenCiv2 (github.com/richardpenman/civ2, `src/auto/city.cpp` `city_split_trade`): while a city builds
@@ -163,6 +173,109 @@ describe('capitalizationRules', (): void => {
     cityBuild.check();
 
     expect(treasury.value()).to.equal(3);
+  });
+
+  // The box is lost with the turn's production: here 30 from a half-built Temple. (The original keeps its box, and
+  //  loses only the turn's shields, `city_process_production` and `city_process_disorder`.)
+  it("loses the progress it was changed to with, on a first turn it doesn't pay", async (): Promise<void> => {
+    const { cityBuild, treasury } = await setUp({
+      pays: (): boolean => false,
+    });
+
+    cityBuild.build(Temple);
+    cityBuild.add(new BuildProgress(30));
+    cityBuild.check();
+
+    cityBuild.build(Capitalization);
+    cityBuild.add(new BuildProgress(5));
+    cityBuild.check();
+
+    expect(treasury.value()).to.equal(0);
+    expect(cityBuild.progress().value()).to.equal(0);
+  });
+
+  it('pays out through `payOut`, which a ruleset can call from its own production step', async (): Promise<void> => {
+    const { cityBuild, treasury } = await setUp(),
+      registry = new PlayerTreasuryRegistry();
+
+    registry.register(treasury);
+
+    expect(
+      payOut(
+        cityBuild.city(),
+        7,
+        { playerTreasuryRegistry: registry },
+        { YieldType: Gold }
+      )
+    ).to.equal(7);
+    expect(
+      payOut(
+        cityBuild.city(),
+        0,
+        { playerTreasuryRegistry: registry },
+        { YieldType: Gold }
+      )
+    ).to.equal(0);
+    expect(
+      payOut(
+        cityBuild.city(),
+        4,
+        { playerTreasuryRegistry: registry },
+        { YieldType: Gold, pays: () => false }
+      )
+    ).to.equal(0);
+    expect(treasury.value()).to.equal(7);
+  });
+
+  // Capitalization never completes, so on its own the queue behind it would never be reached.
+  it('moves on to the item queued after it, once the turn is paid out', async (): Promise<void> => {
+    const { cityBuild, completed, treasury } = await setUp();
+
+    cityBuild.build(Capitalization);
+    cityBuild.add(new BuildProgress(6));
+    cityBuild.check();
+
+    expect(cityBuild.building()!.item()).to.equal(Capitalization);
+
+    cityBuild.enqueue(Barracks);
+    cityBuild.add(new BuildProgress(4));
+    cityBuild.check();
+
+    expect(treasury.value()).to.equal(10);
+    expect(cityBuild.building()!.item()).to.equal(Barracks);
+    expect(cityBuild.queued()).to.deep.equal([]);
+    expect(cityBuild.progress().value()).to.equal(0);
+
+    cityBuild.add(new BuildProgress(30));
+    cityBuild.check();
+
+    expect(completed.length).to.equal(1);
+    expect(completed[0]).to.instanceof(Barracks);
+    expect(treasury.value()).to.equal(10);
+  });
+
+  it('drops queued items the city can no longer build, and stays when none is left', async (): Promise<void> => {
+    const { available, cityBuild } = await setUp();
+
+    cityBuild.build(Capitalization);
+    cityBuild.enqueue(Barracks);
+    cityBuild.enqueue(Temple);
+    cityBuild.enqueue(Barracks);
+
+    available.Barracks = false;
+
+    cityBuild.add(new BuildProgress(2));
+    cityBuild.check();
+
+    expect(cityBuild.building()!.item()).to.equal(Temple);
+    expect(cityBuild.queued()).to.deep.equal([Barracks]);
+
+    cityBuild.build(Capitalization);
+    cityBuild.add(new BuildProgress(2));
+    cityBuild.check();
+
+    expect(cityBuild.building()!.item()).to.equal(Capitalization);
+    expect(cityBuild.queued()).to.deep.equal([]);
   });
 
   it("works for a ruleset's subclass", async (): Promise<void> => {

@@ -24,8 +24,9 @@ export interface CapitalizationConversionOptions extends CapitalizationOptions {
   /** The treasury the gold goes into: the player's treasury of this yield. */
   YieldType: typeof Yield;
   /**
-   * Whether the city's production is paid out this turn. When it isn't, the production is lost all the same. Always,
-   *  by default; the original pays nothing under Anarchy.
+   * Whether the city's production is paid out this turn. When it isn't, the build's progress is lost all the same:
+   *  the turn's production, and on the first turn whatever the city had when it changed to it. Always, by default;
+   *  the original pays nothing under Anarchy.
    */
   pays?: (city: City) => boolean;
 }
@@ -48,14 +49,40 @@ export declare const capitalizationHold: (
   options?: CapitalizationOptions
 ) => Hold[];
 /**
+ * Pays `amount` of production into the city's player's `YieldType` treasury, one for one, when it is above 0 and
+ *  `pays` allows it, and gives what was paid. The conversion rule calls it.
+ *
+ * A ruleset can instead call it from its own production step with the turn's production, and not add that production
+ *  to the build. The city's stored production is then kept only if the ruleset registers the cost, the `Hold` rule and
+ *  the queue rule and leaves out `capitalizationConversion`: `capitalizationRules` includes the conversion, which pays
+ *  the stored progress out on the first turn.
+ */
+export declare const payOut: (
+  city: City,
+  amount: number,
+  { playerTreasuryRegistry }: CapitalizationDependencies,
+  { YieldType, pays }: CapitalizationConversionOptions
+) => number;
+/**
  * A `BuildingHeld` rule that turns the build's progress into `YieldType` (gold), one for one, into the city's player's
  *  treasury, and sets the progress back to 0. `CityBuild#check` processes it every turn, after the turn's production
  *  (net of what the city's units cost) has gone in, so each turn pays out that turn's production. The first turn also
  *  pays out whatever progress the city had when it changed to it.
  */
 export declare const capitalizationConversion: (
-  { playerTreasuryRegistry }: CapitalizationDependencies | undefined,
+  dependencies: CapitalizationDependencies | undefined,
   options: CapitalizationConversionOptions
+) => BuildingHeld[];
+/**
+ * A `BuildingHeld` rule that moves the city on from `Item` to the first item queued after it, once something is queued:
+ *  as the `Hold` rule never lets it complete, the queue would otherwise never be reached. So building it means "until
+ *  something else is queued". Queued items the city can no longer build are dropped first, without a notice. The
+ *  change is a choice like any other (`CityBuild#choose`), so the ruleset's `ProductionChanged` rules are asked.
+ *
+ * `Low`, so it runs after the conversion has paid out the turn's production: the next item starts from what is left.
+ */
+export declare const capitalizationQueue: (
+  options?: CapitalizationOptions
 ) => BuildingHeld[];
 /**
  * A criterion for a ruleset's own `Spend` rules (the price of buying what a city builds): not while the city builds
@@ -67,7 +94,7 @@ export declare const capitalizationConversion: (
 export declare const notBuyingCapitalization: (
   Item?: typeof Capitalization
 ) => Criterion;
-/** All three: its cost, the `Hold` rule and the conversion. */
+/** All four: its cost, the `Hold` rule, the conversion and the move on to the queue. */
 export declare const capitalizationRules: (
   dependencies: CapitalizationDependencies,
   options: CapitalizationConversionOptions
