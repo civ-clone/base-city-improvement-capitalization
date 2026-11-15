@@ -1,0 +1,13 @@
+{
+  "name": "@civ-clone/base-city-improvement-capitalization",
+  "version": "0.0.0",
+  "description": "Capitalization: something a city can build that never completes, turning each turn's production into gold.",
+  "repository": "git@github.com:civ-clone/base-city-improvement-capitalization.git",
+  "keywords": [
+    "typescript",
+    "civilization"
+  ],
+  "author": "dom111 <dom111@users.noreply.github.com>",
+  "license": "MIT",
+  "private": false
+}
