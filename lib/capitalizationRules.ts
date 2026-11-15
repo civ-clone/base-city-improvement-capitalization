@@ -1,0 +1,157 @@
+import {
+  PlayerTreasuryRegistry,
+  instance as playerTreasuryRegistryInstance,
+} from '@civ-clone/core-treasury/PlayerTreasuryRegistry';
+import BuildCost from '@civ-clone/core-city-build/Rules/BuildCost';
+import BuildCostItem from '@civ-clone/core-city-build/BuildCost';
+import BuildItem from '@civ-clone/core-city-build/BuildItem';
+import { IBuildable as Buildable } from '@civ-clone/core-city-build/Buildable';
+import BuildingHeld from '@civ-clone/core-city-build/Rules/BuildingHeld';
+import Capitalization from '../Capitalization';
+import City from '@civ-clone/core-city/City';
+import CityBuild from '@civ-clone/core-city-build/CityBuild';
+import Criterion from '@civ-clone/core-rule/Criterion';
+import Effect from '@civ-clone/core-rule/Effect';
+import Hold from '@civ-clone/core-city-build/Rules/Hold';
+import Yield from '@civ-clone/core-yield/Yield';
+
+export interface CapitalizationDependencies {
+  playerTreasuryRegistry?: PlayerTreasuryRegistry;
+}
+
+export interface CapitalizationOptions {
+  /** The item: `Capitalization`, or a ruleset's subclass of it. `Capitalization` by default. */
+  Item?: typeof Capitalization;
+  /**
+   * The start of the rules' ids: `<idPrefix>:city/build-cost/capitalization`, `…:city/hold/capitalization` and
+   *  `…:city/building-held/capitalization`. `base-city-improvement-capitalization` by default. The `Hold` rule's id is
+   *  what a client is given for why the build waits.
+   */
+  idPrefix?: string;
+}
+
+export interface CapitalizationConversionOptions extends CapitalizationOptions {
+  /** The treasury the gold goes into: the player's treasury of this yield. */
+  YieldType: typeof Yield;
+  /**
+   * Whether the city's production is paid out this turn. When it isn't, the production is lost all the same. Always,
+   *  by default; the original pays nothing under Anarchy.
+   */
+  pays?: (city: City) => boolean;
+}
+
+const prefixOf = (options: CapitalizationOptions): string =>
+  options.idPrefix ?? 'base-city-improvement-capitalization';
+
+/** Whether `item` is `Item` (`Capitalization` by default) or a subclass of it. */
+export const isCapitalization = (
+  item: unknown,
+  Item: typeof Capitalization = Capitalization
+): boolean =>
+  item === Item ||
+  (typeof item === 'function' && Object.isPrototypeOf.call(Item, item));
+
+/** Whether `cityBuild` is building `Item` (`Capitalization` by default). */
+export const isBuildingCapitalization = (
+  cityBuild: CityBuild,
+  Item: typeof Capitalization = Capitalization
+): boolean => isCapitalization(cityBuild.building()?.item(), Item);
+
+/** Its cost: nothing, so it is paid for at every check, with whatever progress is there. */
+export const capitalizationCost = (
+  options: CapitalizationOptions = {}
+): BuildCost[] => {
+  const Item = options.Item ?? Capitalization;
+
+  return [
+    new BuildCost(
+      `${prefixOf(options)}:city/build-cost/capitalization`,
+      new Criterion((buildItem: BuildItem): boolean =>
+        isCapitalization(buildItem.item(), Item)
+      ),
+      new Effect((): BuildCostItem => new BuildCostItem(0))
+    ),
+  ];
+};
+
+/** A `Hold` rule that always holds it, so it never completes. It reads only the item, as `Hold` criteria must. */
+export const capitalizationHold = (
+  options: CapitalizationOptions = {}
+): Hold[] => {
+  const Item = options.Item ?? Capitalization;
+
+  return [
+    new Hold(
+      `${prefixOf(options)}:city/hold/capitalization`,
+      new Criterion((cityBuild: CityBuild, item: Buildable): boolean =>
+        isCapitalization(item, Item)
+      )
+    ),
+  ];
+};
+
+/**
+ * A `BuildingHeld` rule that turns the build's progress into `YieldType` (gold), one for one, into the city's player's
+ *  treasury, and sets the progress back to 0. `CityBuild#check` processes it every turn, after the turn's production
+ *  (net of what the city's units cost) has gone in, so each turn pays out that turn's production. The first turn also
+ *  pays out whatever progress the city had when it changed to it.
+ */
+export const capitalizationConversion = (
+  {
+    playerTreasuryRegistry = playerTreasuryRegistryInstance,
+  }: CapitalizationDependencies = {},
+  options: CapitalizationConversionOptions
+): BuildingHeld[] => {
+  const Item = options.Item ?? Capitalization,
+    { YieldType, pays = (): boolean => true } = options;
+
+  return [
+    new BuildingHeld(
+      `${prefixOf(options)}:city/building-held/capitalization`,
+      new Criterion((cityBuild: CityBuild, item: Buildable): boolean =>
+        isCapitalization(item, Item)
+      ),
+      new Effect((cityBuild: CityBuild): void => {
+        const city = cityBuild.city(),
+          value = cityBuild.progress().value();
+
+        cityBuild.progress().set(0, 'capitalization');
+
+        if (value <= 0 || !pays(city)) {
+          return;
+        }
+
+        playerTreasuryRegistry
+          .getByPlayerAndType(city.player(), YieldType)
+          .add(value);
+      })
+    ),
+  ];
+};
+
+/**
+ * A criterion for a ruleset's own `Spend` rules (the price of buying what a city builds): not while the city builds
+ *  `Item`. A `Spend` rule can't refuse another's price, so each one that could answer for it takes this.
+ *
+ * With no cost, nothing is left to buy, so base-treasury's `isBuying` is already false for it; this is for a `Spend`
+ *  rule that doesn't ask that.
+ */
+export const notBuyingCapitalization = (
+  Item: typeof Capitalization = Capitalization
+): Criterion =>
+  new Criterion(
+    (cityBuild: CityBuild): boolean =>
+      !isBuildingCapitalization(cityBuild, Item)
+  );
+
+/** All three: its cost, the `Hold` rule and the conversion. */
+export const capitalizationRules = (
+  dependencies: CapitalizationDependencies,
+  options: CapitalizationConversionOptions
+): (BuildCost | Hold | BuildingHeld)[] => [
+  ...capitalizationCost(options),
+  ...capitalizationHold(options),
+  ...capitalizationConversion(dependencies, options),
+];
+
+export default capitalizationRules;
